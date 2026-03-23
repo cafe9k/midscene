@@ -1,6 +1,7 @@
 import { findAllMidsceneLocatorField, parseActionParam } from '@/ai-model';
 import type { AbstractInterface } from '@/device';
 import type Service from '@/service';
+import { setTimingFieldOnce } from '@/task-timing';
 import type {
   DetailedLocateParam,
   DeviceAction,
@@ -66,6 +67,7 @@ interface TaskBuilderDeps {
 interface BuildOptions {
   cacheable?: boolean;
   deepLocate?: boolean;
+  abortSignal?: AbortSignal;
 }
 
 interface PlanBuildContext {
@@ -74,6 +76,7 @@ interface PlanBuildContext {
   modelConfigForDefaultIntent: IModelConfig;
   cacheable?: boolean;
   deepLocate?: boolean;
+  abortSignal?: AbortSignal;
 }
 
 export class TaskBuilder {
@@ -116,6 +119,7 @@ export class TaskBuilder {
       modelConfigForDefaultIntent,
       cacheable,
       deepLocate: options?.deepLocate,
+      abortSignal: options?.abortSignal,
     };
 
     type PlanHandler = (plan: PlanningAction) => Promise<void> | void;
@@ -229,6 +233,8 @@ export class TaskBuilder {
       thought: plan.thought,
       param: plan.param,
       executor: async (param, taskContext) => {
+        const timing = taskContext.task.timing;
+
         debug(
           'executing action',
           planType,
@@ -246,13 +252,18 @@ export class TaskBuilder {
           );
         });
 
+        setTimingFieldOnce(timing, 'beforeInvokeActionHookStart');
         try {
           await Promise.all([
             (async () => {
               if (this.interface.beforeInvokeAction) {
-                debug('will call "beforeInvokeAction" for interface');
+                debug(
+                  `will call "beforeInvokeAction" for interface with action name ${action.name}`,
+                );
                 await this.interface.beforeInvokeAction(action.name, param);
-                debug('called "beforeInvokeAction" for interface');
+                debug(
+                  `called "beforeInvokeAction" for interface with action name ${action.name}`,
+                );
               }
             })(),
             sleep(200),
@@ -265,6 +276,7 @@ export class TaskBuilder {
             { cause: originalError },
           );
         }
+        setTimingFieldOnce(timing, 'beforeInvokeActionHookEnd');
 
         const { shrunkShotToLogicalRatio } = uiContext;
         if (shrunkShotToLogicalRatio === undefined) {
@@ -286,10 +298,15 @@ export class TaskBuilder {
           }
         }
 
+        setTimingFieldOnce(timing, 'callActionStart');
+
         debug('calling action', action.name);
         const actionFn = action.call.bind(this.interface);
         const actionResult = await actionFn(param, taskContext);
+        setTimingFieldOnce(timing, 'callActionEnd');
         debug('called action', action.name, 'result:', actionResult);
+
+        setTimingFieldOnce(timing, 'afterInvokeActionHookStart');
 
         const delayAfterRunner =
           action.delayAfterRunner ?? this.waitAfterAction ?? 300;
@@ -299,9 +316,13 @@ export class TaskBuilder {
 
         try {
           if (this.interface.afterInvokeAction) {
-            debug('will call "afterInvokeAction" for interface');
+            debug(
+              `will call "afterInvokeAction" for interface with action name ${action.name}`,
+            );
             await this.interface.afterInvokeAction(action.name, param);
-            debug('called "afterInvokeAction" for interface');
+            debug(
+              `called "afterInvokeAction" for interface with action name ${action.name}`,
+            );
           }
         } catch (originalError: any) {
           const originalMessage =
@@ -311,6 +332,8 @@ export class TaskBuilder {
             { cause: originalError },
           );
         }
+
+        setTimingFieldOnce(timing, 'afterInvokeActionHookEnd');
 
         return {
           output: actionResult,
@@ -327,7 +350,8 @@ export class TaskBuilder {
     context: PlanBuildContext,
     onResult?: (result: LocateResultElement) => void,
   ): ExecutionTaskPlanningLocateApply {
-    const { cacheable, modelConfigForDefaultIntent, deepLocate } = context;
+    const { cacheable, modelConfigForDefaultIntent, deepLocate, abortSignal } =
+      context;
 
     let locateParam = detailedLocateParam;
 
@@ -344,10 +368,10 @@ export class TaskBuilder {
       };
     }
 
-    if (deepLocate && !locateParam.deepThink) {
+    if (deepLocate && !locateParam.deepLocate) {
       locateParam = {
         ...locateParam,
-        deepThink: true,
+        deepLocate: true,
       };
     }
 
@@ -467,14 +491,17 @@ export class TaskBuilder {
         const isCacheHit = !!elementFromCache;
 
         let elementFromAiLocate: LocateResultElement | null | undefined;
+        const timing = taskContext.task.timing;
         if (!isXpathHit && !isCacheHit && !isPlanHit) {
           try {
+            setTimingFieldOnce(timing, 'callAiStart');
             locateResult = await this.service.locate(
               param,
               {
                 context: uiContext,
               },
               modelConfigForDefaultIntent,
+              abortSignal,
             );
             applyDump(locateResult.dump);
             elementFromAiLocate = locateResult.element;
@@ -483,6 +510,8 @@ export class TaskBuilder {
               applyDump(error.dump);
             }
             throw error;
+          } finally {
+            setTimingFieldOnce(timing, 'callAiEnd');
           }
         }
 

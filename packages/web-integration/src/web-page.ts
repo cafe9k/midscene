@@ -13,10 +13,12 @@ import {
   defineActionInput,
   defineActionKeyboardPress,
   defineActionLongPress,
+  defineActionPinch,
   defineActionRightClick,
   defineActionScroll,
   defineActionSwipe,
   defineActionTap,
+  normalizePinchParam,
 } from '@midscene/core/device';
 
 import { sleep } from '@midscene/core/utils';
@@ -25,6 +27,14 @@ import { getDebug } from '@midscene/shared/logger';
 import { transformHotkeyInput } from '@midscene/shared/us-keyboard-layout';
 
 const debug = getDebug('web:page');
+
+const navigateParamSchema = z.object({
+  url: z
+    .string()
+    .describe(
+      'The URL to navigate to. Must start with https://, file://, or a similar protocol.',
+    ),
+});
 
 function normalizeKeyInputs(value: string | string[]): string[] {
   const inputs = Array.isArray(value) ? value : [value];
@@ -421,6 +431,13 @@ export abstract class AbstractWebPage extends AbstractInterface {
     to: { x: number; y: number },
     duration?: number,
   ): Promise<void>;
+  abstract pinch(
+    centerX: number,
+    centerY: number,
+    startDistance: number,
+    endDistance: number,
+    duration?: number,
+  ): Promise<void>;
 }
 
 export const commonWebActionsForWebPage = <T extends AbstractWebPage>(
@@ -562,6 +579,13 @@ export const commonWebActionsForWebPage = <T extends AbstractWebPage>(
     await page.longPress(element.center[0], element.center[1], duration);
   }),
 
+  defineActionPinch(async (param) => {
+    const { centerX, centerY, startDistance, endDistance, duration } =
+      normalizePinchParam(param, await page.size());
+
+    await page.pinch(centerX, centerY, startDistance, endDistance, duration);
+  }),
+
   ...(includeTouchEvents
     ? [
         defineActionSwipe(async (param) => {
@@ -640,17 +664,14 @@ export const commonWebActionsForWebPage = <T extends AbstractWebPage>(
     await page.clearInput(param.locate as ElementInfo | undefined);
   }),
 
-  defineAction({
+  defineAction<typeof navigateParamSchema, { url: string }>({
     name: 'Navigate',
     description:
       'Navigate the browser to a specified URL. Opens the URL in the current tab.',
-    paramSchema: z.object({
-      url: z
-        .string()
-        .describe(
-          'The URL to navigate to. Must start with https://, file://, or a similar protocol.',
-        ),
-    }),
+    paramSchema: navigateParamSchema,
+    sample: {
+      url: 'https://www.example.com',
+    },
     call: async (param) => {
       if (!page.navigate) {
         throw new Error(

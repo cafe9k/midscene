@@ -8,7 +8,8 @@
     "dev:rsdoctor": "RSDOCTOR=true rsbuild dev",
     "build:rsdoctor": "RSDOCTOR=true rsbuild build",
     "preview": "rsbuild preview",
-    "e2e": "node ../../packages/cli/bin/midscene ./e2e/"
+    "generate-demo": "node scripts/generate-demo-report.mjs",
+    "e2e": "node scripts/generate-demo-report.mjs && node ../../packages/cli/bin/midscene ./e2e/"
   },
   "dependencies": {
     "@ant-design/icons": "^5.3.1",
@@ -23,8 +24,6 @@
     "@rsbuild/plugin-type-check": "^1.3.2",
     "@types/chrome": "0.0.279",
     "antd": "^5.21.6",
-    "pixi-filters": "6.0.5",
-    "pixi.js": "8.1.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-resizable-panels": "2.0.22",

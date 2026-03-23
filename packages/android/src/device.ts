@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { execFile } from 'node:child_process';
 import fs, { unlink } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -22,10 +23,12 @@ import {
   defineActionDoubleClick,
   defineActionDragAndDrop,
   defineActionKeyboardPress,
+  defineActionPinch,
   defineActionScroll,
   defineActionSwipe,
   defineActionTap,
   normalizeMobileSwipeParam,
+  normalizePinchParam,
 } from '@midscene/core/device';
 import { getTmpFile, sleep } from '@midscene/core/utils';
 import {
@@ -98,6 +101,8 @@ export class AndroidDevice implements AbstractInterface {
   private scrcpyAdapter: ScrcpyDeviceAdapter | null = null;
   private appNameMapping: Record<string, string> = {};
   private cachedAdjustScale: { x: number; y: number } | null = null;
+  private takeScreenshotFailCount = 0;
+  private static readonly TAKE_SCREENSHOT_FAIL_THRESHOLD = 3;
   interfaceType: InterfaceType = 'android';
   uri: string | undefined;
   options?: AndroidDeviceOpt;
@@ -144,7 +149,16 @@ export class AndroidDevice implements AbstractInterface {
             .describe('The input field to be filled')
             .optional(),
         }),
-        call: async (param) => {
+        sample: {
+          value: 'test@example.com',
+          locate: { prompt: 'the email input field' },
+        },
+        call: async (param: {
+          value: string;
+          autoDismissKeyboard?: boolean;
+          mode?: 'replace' | 'clear' | 'typeOnly';
+          locate?: LocateResultElement;
+        }) => {
           const element = param.locate;
           if (param.mode !== 'typeOnly') {
             await this.clearInput(element as unknown as ElementInfo);
@@ -261,6 +275,9 @@ export class AndroidDevice implements AbstractInterface {
             'The element to be long pressed',
           ),
         }),
+        sample: {
+          locate: { prompt: 'the message bubble' },
+        },
         call: async (param) => {
           const element = param.locate;
           if (!element) {
@@ -300,6 +317,10 @@ export class AndroidDevice implements AbstractInterface {
             .optional()
             .describe('The element to start the pull from (optional)'),
         }),
+        sample: {
+          direction: 'down',
+          locate: { prompt: 'the center of the content list area' },
+        },
         call: async (param) => {
           const element = param.locate;
           const startPoint = element
@@ -316,6 +337,25 @@ export class AndroidDevice implements AbstractInterface {
             throw new Error(`Unknown pull direction: ${param.direction}`);
           }
         },
+      }),
+      defineActionPinch(async (param) => {
+        const { centerX, centerY, startDistance, endDistance, duration } =
+          normalizePinchParam(param, await this.size());
+
+        const { x: adjCenterX, y: adjCenterY } = await this.adjustCoordinates(
+          centerX,
+          centerY,
+        );
+        const ratio =
+          adjCenterX !== 0 && centerX !== 0 ? adjCenterX / centerX : 1;
+        const adjStartDist = Math.round(startDistance * ratio);
+        const adjEndDist = Math.round(endDistance * ratio);
+
+        await this.ensureYadb();
+        const adb = await this.getAdb();
+        await adb.shell(
+          `app_process${this.getDisplayArg()} -Djava.class.path=/data/local/tmp/yadb /data/local/tmp com.ysbing.yadb.Main -pinch ${adjCenterX} ${adjCenterY} ${adjStartDist} ${adjEndDist} ${duration}`,
+        );
       }),
       defineActionClearInput(async (param) => {
         await this.clearInput(param.locate as ElementInfo | undefined);
@@ -597,6 +637,9 @@ ${Object.keys(size)
   }> {
     // Return cached value if not always fetching and cache exists
     const shouldCache = !(this.options?.alwaysRefreshScreenInfo ?? false);
+    debugDevice(
+      `getScreenSize: alwaysRefreshScreenInfo=${this.options?.alwaysRefreshScreenInfo}, shouldCache=${shouldCache}, hasCachedSize=${!!this.cachedScreenSize}`,
+    );
     if (shouldCache && this.cachedScreenSize) {
       return this.cachedScreenSize;
     }
@@ -813,6 +856,9 @@ ${Object.keys(size)
   async getDisplayOrientation(): Promise<number> {
     // Return cached value if not always fetching and cache exists
     const shouldCache = !(this.options?.alwaysRefreshScreenInfo ?? false);
+    debugDevice(
+      `getDisplayOrientation: alwaysRefreshScreenInfo=${this.options?.alwaysRefreshScreenInfo}, shouldCache=${shouldCache}, hasCachedOrientation=${this.cachedOrientation !== null}`,
+    );
     if (shouldCache && this.cachedOrientation !== null) {
       return this.cachedOrientation;
     }
@@ -897,6 +943,9 @@ ${Object.keys(size)
    */
   private async getAdjustScale(): Promise<{ x: number; y: number }> {
     const shouldCache = !(this.options?.alwaysRefreshScreenInfo ?? false);
+    debugDevice(
+      `getAdjustScale: alwaysRefreshScreenInfo=${this.options?.alwaysRefreshScreenInfo}, shouldCache=${shouldCache}, hasCachedScale=${!!this.cachedAdjustScale}`,
+    );
     if (shouldCache && this.cachedAdjustScale) {
       return this.cachedAdjustScale;
     }
@@ -1025,14 +1074,19 @@ ${Object.keys(size)
     const useShellScreencap = typeof this.options?.displayId === 'number';
 
     try {
-      // Directly check condition instead of throwing error
-      if (!useShellScreencap) {
+      // Skip takeScreenshot if it has failed consecutively, go directly to shell screencap
+      if (
+        !useShellScreencap &&
+        this.takeScreenshotFailCount <
+          AndroidDevice.TAKE_SCREENSHOT_FAIL_THRESHOLD
+      ) {
         debugDevice('Taking screenshot via adb.takeScreenshot');
         screenshotBuffer = await adb.takeScreenshot(null);
         debugDevice('adb.takeScreenshot completed');
 
         // make sure screenshotBuffer is not null
         if (!screenshotBuffer) {
+          this.takeScreenshotFailCount++;
           throw new Error(
             'Failed to capture screenshot: screenshotBuffer is null',
           );
@@ -1043,13 +1097,25 @@ ${Object.keys(size)
           debugDevice(
             'Invalid image buffer detected: not a valid image format',
           );
+          this.takeScreenshotFailCount++;
           throw new Error(
             'Screenshot buffer has invalid format: could not find valid image signature',
           );
         }
+
+        // Reset fail count on success
+        this.takeScreenshotFailCount = 0;
       } else {
-        // Jump directly to shell screencap logic for displayId
-        throw new Error('Using shell screencap for displayId');
+        if (
+          this.takeScreenshotFailCount >=
+          AndroidDevice.TAKE_SCREENSHOT_FAIL_THRESHOLD
+        ) {
+          debugDevice(
+            'Skipping takeScreenshot (failed %d consecutive times), using shell screencap directly',
+            this.takeScreenshotFailCount,
+          );
+        }
+        throw new Error('Using shell screencap directly');
       }
 
       // Additional validation: check buffer size
@@ -1119,12 +1185,23 @@ ${Object.keys(size)
           `Fallback screenshot validated successfully: ${screenshotBuffer.length} bytes`,
         );
       } finally {
-        // Asynchronously delete remote screenshot (don't block)
-        Promise.resolve()
-          .then(() => adb.shell(`rm ${androidScreenshotPath}`))
-          .catch((error) => {
-            debugDevice(`Failed to delete remote screenshot: ${error}`);
-          });
+        // Fire-and-forget: delete remote screenshot via separate process
+        // Using execFile instead of adb.shell to avoid blocking the main ADB connection
+        // (adb.shell has a 60s timeout that can block all subsequent ADB operations)
+        const adbPath = adb.executable?.path ?? 'adb';
+        const child = execFile(
+          adbPath,
+          ['-s', this.deviceId, 'shell', `rm ${androidScreenshotPath}`],
+          { timeout: 3000 },
+          (err) => {
+            if (err)
+              debugDevice(
+                'Failed to delete remote screenshot: %s',
+                err.message,
+              );
+          },
+        );
+        child.unref();
       }
     }
 
@@ -1919,11 +1996,18 @@ const createPlatformActions = (
   AndroidRecentAppsButton: DeviceActionAndroidRecentAppsButton;
 } => {
   return {
-    RunAdbShell: defineAction({
+    RunAdbShell: defineAction<
+      typeof runAdbShellParamSchema,
+      RunAdbShellParam,
+      string
+    >({
       name: 'RunAdbShell',
       description: 'Execute ADB shell command on Android device',
       interfaceAlias: 'runAdbShell',
       paramSchema: runAdbShellParamSchema,
+      sample: {
+        command: 'dumpsys window displays | grep -E "mCurrentFocus"',
+      },
       call: async (param) => {
         if (!param.command || param.command.trim() === '') {
           throw new Error('RunAdbShell requires a non-empty command parameter');
@@ -1932,11 +2016,14 @@ const createPlatformActions = (
         return await adb.shell(param.command);
       },
     }),
-    Launch: defineAction({
+    Launch: defineAction<typeof launchParamSchema, LaunchParam, void>({
       name: 'Launch',
       description: 'Launch an Android app or URL',
       interfaceAlias: 'launch',
       paramSchema: launchParamSchema,
+      sample: {
+        uri: 'com.example.app',
+      },
       call: async (param) => {
         if (!param.uri || param.uri.trim() === '') {
           throw new Error('Launch requires a non-empty uri parameter');

@@ -1,6 +1,6 @@
 {
   "name": "@midscene/visualizer",
-  "version": "1.4.9",
+  "version": "1.5.6",
   "repository": "https://github.com/web-infra-dev/midscene",
   "homepage": "https://midscenejs.com/",
   "types": "./dist/types/index.d.ts",
@@ -18,6 +18,7 @@
     "dev": "npm run build:watch",
     "build": "rslib build",
     "build:watch": "rslib build --watch --no-clean",
+    "test": "vitest --run",
     "serve": "http-server ./dist/ -p 3000"
   },
   "peerDependencies": {
@@ -25,7 +26,6 @@
     "react-dom": ">=19.1.0"
   },
   "devDependencies": {
-    "@pixi/unsafe-eval": "7.4.2",
     "@rsbuild/plugin-less": "^1.5.0",
     "@rsbuild/plugin-node-polyfill": "1.4.2",
     "@rsbuild/plugin-react": "^1.4.1",
@@ -37,8 +37,6 @@
     "@types/react-dom": "^18.3.1",
     "execa": "9.3.0",
     "http-server": "14.1.1",
-    "pixi-filters": "6.0.5",
-    "pixi.js": "8.1.1",
     "query-string": "9.1.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -46,6 +44,7 @@
     "rimraf": "~3.0.2",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3",
+    "vitest": "3.0.5",
     "zustand": "4.5.2"
   },
   "sideEffects": ["**/*.css", "**/*.less", "**/*.sass", "**/*.scss"],

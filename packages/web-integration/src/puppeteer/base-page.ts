@@ -40,6 +40,9 @@ import {
 
 export const debugPage = getDebug('web:page');
 
+export const BROWSER_NAVIGATION_ERROR_PATTERN =
+  /execution context was destroyed|frame was detached|target closed|page has been closed|context was destroyed|net::ERR_ABORTED/i;
+
 export class Page<
   AgentType extends 'puppeteer' | 'playwright',
   InterfaceType extends PuppeteerPage | PlaywrightPage,
@@ -111,7 +114,14 @@ export class Page<
     return this.evaluate(script);
   }
 
-  async waitForNavigation() {
+  async waitForNavigation(
+    moment:
+      | 'screenshot'
+      | 'getElementsInfo'
+      | 'getElementsNodeTree'
+      | 'afterInvokeAction',
+    actionName?: string,
+  ) {
     if (this.waitForNavigationTimeout === 0) {
       debugPage('waitForNavigation timeout is 0, skip waiting');
       return;
@@ -122,8 +132,9 @@ export class Page<
       this.interfaceType === 'puppeteer' ||
       this.interfaceType === 'playwright'
     ) {
-      debugPage('waitForNavigation begin');
-      debugPage(`waitForNavigation timeout: ${this.waitForNavigationTimeout}`);
+      debugPage(
+        `waitForNavigation begin at moment ${moment} with timeout: ${this.waitForNavigationTimeout} and actionName: ${actionName}`,
+      );
       try {
         await (this.underlyingPage as PuppeteerPage).waitForSelector('html', {
           timeout: this.waitForNavigationTimeout,
@@ -138,13 +149,19 @@ export class Page<
     }
   }
 
-  async waitForNetworkIdle(): Promise<void> {
+  async waitForNetworkIdle(
+    moment: 'afterInvokeAction',
+    actionName?: string,
+  ): Promise<void> {
     if (this.interfaceType === 'puppeteer') {
       if (this.waitForNetworkIdleTimeout === 0) {
         debugPage('waitForNetworkIdle timeout is 0, skip waiting');
         return;
       }
 
+      debugPage(
+        `waitForNetworkIdle begin at moment ${moment} with timeout: ${this.waitForNetworkIdleTimeout} and concurrency: ${DEFAULT_WAIT_FOR_NETWORK_IDLE_CONCURRENCY} and actionName: ${actionName}`,
+      );
       try {
         await (this.underlyingPage as PuppeteerPage).waitForNetworkIdle({
           idleTime: 200,
@@ -157,6 +174,7 @@ export class Page<
           '[midscene:warning] Waiting for the "network idle" has timed out, but Midscene will continue execution. Please check https://midscenejs.com/faq.html#customize-the-network-timeout for more information on customizing the network timeout',
         );
       }
+      debugPage('waitForNetworkIdle end');
     } else {
       // TODO: implement playwright waitForNetworkIdle
     }
@@ -167,7 +185,7 @@ export class Page<
     // const scripts = await getExtraReturnLogic();
     // const captureElementSnapshot = await this.evaluate(scripts);
     // return captureElementSnapshot as ElementInfo[];
-    await this.waitForNavigation();
+    await this.waitForNavigation('getElementsInfo');
     debugPage('getElementsInfo begin');
     const tree = await this.getElementsNodeTree();
     debugPage('getElementsInfo end');
@@ -247,7 +265,7 @@ export class Page<
     // ref: packages/web-integration/src/playwright/ai-fixture.ts popup logic
     // During test execution, a new page might be opened through a connection, and the page remains confined to the same page instance.
     // The page may go through opening, closing, and reopening; if the page is closed, evaluate may return undefined, which can lead to errors.
-    await this.waitForNavigation();
+    await this.waitForNavigation('getElementsNodeTree');
     const scripts = await getExtraReturnLogic(true);
     assert(scripts, 'scripts should be set before writing report in browser');
     const startTime = Date.now();
@@ -272,7 +290,6 @@ export class Page<
   async screenshotBase64(): Promise<string> {
     const imgType = 'jpeg';
     const quality = 90;
-    await this.waitForNavigation();
     const startTime = Date.now();
     debugPage('screenshotBase64 begin');
 
@@ -549,8 +566,11 @@ export class Page<
   }
 
   async afterInvokeAction(name: string, param: any): Promise<void> {
-    await this.waitForNavigation();
-    await this.waitForNetworkIdle();
+    await Promise.all([
+      this.waitForNavigation('afterInvokeAction', name),
+      this.waitForNetworkIdle('afterInvokeAction', name),
+    ]);
+
     if (this.onAfterInvokeAction) {
       await this.onAfterInvokeAction(name, param);
     }
@@ -631,6 +651,75 @@ export class Page<
       await page.mouse.down({ button: 'left' });
       await page.waitForTimeout(duration);
       await page.mouse.up({ button: 'left' });
+    }
+  }
+
+  async pinch(
+    centerX: number,
+    centerY: number,
+    startDistance: number,
+    endDistance: number,
+    duration = 500,
+  ): Promise<void> {
+    const steps = 30;
+    const delay = duration / steps;
+    const halfStart = startDistance / 2;
+    const halfEnd = endDistance / 2;
+
+    // biome-ignore lint: CDP session types differ between Puppeteer and Playwright
+    let client: any;
+    if (this.interfaceType === 'puppeteer') {
+      const page = this.underlyingPage as PuppeteerPage;
+      client = await page.target().createCDPSession();
+    } else if (this.interfaceType === 'playwright') {
+      const page = this.underlyingPage as PlaywrightPage;
+      // CDP is Chromium-only; Firefox/WebKit do not support it
+      const browserName = page.context().browser()?.browserType().name();
+      if (browserName && browserName !== 'chromium') {
+        throw new Error(
+          `Pinch gesture requires Chromium-based browser, but current browser is "${browserName}". CDP touch events are not supported in Firefox/WebKit.`,
+        );
+      }
+      client = await page.context().newCDPSession(page);
+    } else {
+      return;
+    }
+
+    try {
+      await client.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [
+          { x: Math.round(centerX), y: Math.round(centerY - halfStart), id: 0 },
+          { x: Math.round(centerX), y: Math.round(centerY + halfStart), id: 1 },
+        ],
+      });
+
+      for (let i = 1; i <= steps; i++) {
+        const currentHalf = halfStart + (halfEnd - halfStart) * (i / steps);
+        await client.send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [
+            {
+              x: Math.round(centerX),
+              y: Math.round(centerY - currentHalf),
+              id: 0,
+            },
+            {
+              x: Math.round(centerX),
+              y: Math.round(centerY + currentHalf),
+              id: 1,
+            },
+          ],
+        });
+        await new Promise((res) => setTimeout(res, delay));
+      }
+
+      await client.send('Input.dispatchTouchEvent', {
+        type: 'touchEnd',
+        touchPoints: [],
+      });
+    } finally {
+      await client.detach();
     }
   }
 
@@ -788,15 +877,14 @@ select {
   const injectStyle = async () => {
     try {
       await (page as PuppeteerPage & PlaywrightPage).evaluate(
-        (id, content) => {
+        ({ id, content }: { id: string; content: string }) => {
           if (document.getElementById(id)) return;
           const style = document.createElement('style');
           style.id = id;
           style.textContent = content;
           document.head.appendChild(style);
         },
-        styleId,
-        styleContent,
+        { id: styleId, content: styleContent },
       );
       debugPage(
         'Midscene - Added base-select appearance style for select elements because of forceChromeSelectRendering is enabled',

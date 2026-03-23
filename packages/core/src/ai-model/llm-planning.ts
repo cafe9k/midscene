@@ -18,7 +18,11 @@ import {
 } from '../common';
 import type { ConversationHistory } from './conversation-history';
 import { systemPromptToTaskPlanning } from './prompt/llm-planning';
-import { extractXMLTag } from './prompt/util';
+import {
+  extractXMLTag,
+  parseMarkFinishedIndexes,
+  parseSubGoalsFromXML,
+} from './prompt/util';
 import {
   AIResponseParseError,
   callAI,
@@ -54,10 +58,23 @@ export function parseXMLPlanningResponse(
     finalizeMessage = completeGoalMatch[2]?.trim() || undefined;
   }
 
+  // Parse sub-goal related tags
+  const updatePlanContent = extractXMLTag(xmlString, 'update-plan-content');
+  const markSubGoalDone = extractXMLTag(xmlString, 'mark-sub-goal-done');
+
+  const updateSubGoals = updatePlanContent
+    ? parseSubGoalsFromXML(updatePlanContent)
+    : undefined;
+  const markFinishedIndexes = markSubGoalDone
+    ? parseMarkFinishedIndexes(markSubGoalDone)
+    : undefined;
+
   // Parse action
   let action: any = null;
   if (actionType && actionType.toLowerCase() !== 'null') {
-    const type = actionType.trim();
+    // Strip any trailing XML tags that LLM might have leaked into the action type
+    // e.g. "KeyboardPress</action-type>\n<action-param-json>" -> "KeyboardPress"
+    const type = actionType.split('<')[0].trim();
     let param: any = undefined;
 
     if (actionParamStr) {
@@ -83,6 +100,8 @@ export function parseXMLPlanningResponse(
     action,
     ...(finalizeMessage !== undefined ? { finalizeMessage } : {}),
     ...(finalizeSuccess !== undefined ? { finalizeSuccess } : {}),
+    ...(updateSubGoals?.length ? { updateSubGoals } : {}),
+    ...(markFinishedIndexes?.length ? { markFinishedIndexes } : {}),
   };
 }
 
@@ -98,6 +117,7 @@ export async function plan(
     includeBbox: boolean;
     imagesIncludeCount?: number;
     deepThink?: DeepThinkOption;
+    abortSignal?: AbortSignal;
   },
 ): Promise<PlanningAIResponse> {
   const { context, modelConfig, conversationHistory } = opts;
@@ -106,12 +126,15 @@ export async function plan(
 
   const { modelFamily } = modelConfig;
 
+  // Only enable sub-goals when deepThink is true
+  const includeSubGoals = opts.deepThink === true;
+
   const systemPrompt = await systemPromptToTaskPlanning({
     actionSpace: opts.actionSpace,
     modelFamily,
     includeBbox: opts.includeBbox,
     includeThought: true, // always include thought
-    deepThink: opts.deepThink === true,
+    includeSubGoals,
   });
 
   let imagePayload = screenshotBase64;
@@ -146,11 +169,13 @@ export async function plan(
 
   let latestFeedbackMessage: ChatCompletionMessageParam;
 
-  // Build historical execution logs text to include in the message
-  const historicalLogsText = conversationHistory.historicalLogsToText();
-  const historicalLogsSection = historicalLogsText
-    ? `\n\n${historicalLogsText}`
-    : '';
+  // Build sub-goal status text to include in the message
+  // In deepThink mode: show full sub-goals with logs
+  // In non-deepThink mode: show historical execution logs
+  const subGoalsText = includeSubGoals
+    ? conversationHistory.subGoalsToText()
+    : conversationHistory.historicalLogsToText();
+  const subGoalsSection = subGoalsText ? `\n\n${subGoalsText}` : '';
 
   // Build memories text to include in the message
   const memoriesText = conversationHistory.memoriesToText();
@@ -162,7 +187,7 @@ export async function plan(
       content: [
         {
           type: 'text',
-          text: `${conversationHistory.pendingFeedbackMessage}. The previous action has been executed, here is the latest screenshot. Please continue according to the instruction.${memoriesSection}${historicalLogsSection}`,
+          text: `${conversationHistory.pendingFeedbackMessage}. The previous action has been executed, here is the latest screenshot. Please continue according to the instruction.${memoriesSection}${subGoalsSection}`,
         },
         {
           type: 'image_url',
@@ -181,7 +206,7 @@ export async function plan(
       content: [
         {
           type: 'text',
-          text: `this is the latest screenshot${memoriesSection}${historicalLogsSection}`,
+          text: `this is the latest screenshot${memoriesSection}${subGoalsSection}`,
         },
         {
           type: 'image_url',
@@ -206,18 +231,30 @@ export async function plan(
     ...historyLog,
   ];
 
-  const {
+  let {
     content: rawResponse,
     usage,
     reasoning_content,
   } = await callAI(msgs, modelConfig, {
     deepThink: opts.deepThink === 'unset' ? undefined : opts.deepThink,
+    abortSignal: opts.abortSignal,
   });
 
-  // Parse XML response to JSON object, capture parsing errors
+  // Parse XML response to JSON object, retry once on parse failure
   let planFromAI: RawResponsePlanningAIResponse;
   try {
-    planFromAI = parseXMLPlanningResponse(rawResponse, modelFamily);
+    try {
+      planFromAI = parseXMLPlanningResponse(rawResponse, modelFamily);
+    } catch {
+      const retry = await callAI(msgs, modelConfig, {
+        deepThink: opts.deepThink === 'unset' ? undefined : opts.deepThink,
+        abortSignal: opts.abortSignal,
+      });
+      rawResponse = retry.content;
+      usage = retry.usage;
+      reasoning_content = retry.reasoning_content;
+      planFromAI = parseXMLPlanningResponse(rawResponse, modelFamily);
+    }
 
     if (planFromAI.action && planFromAI.finalizeSuccess !== undefined) {
       warnLog(
@@ -234,6 +271,10 @@ export async function plan(
     if (planFromAI.finalizeSuccess !== undefined) {
       debug('task completed via <complete> tag, stop planning');
       shouldContinuePlanning = false;
+      // Mark all sub-goals as finished when goal is completed (only when deepThink is enabled)
+      if (includeSubGoals) {
+        conversationHistory.markAllSubGoalsFinished();
+      }
     }
 
     const returnValue: PlanningAIResponse = {
@@ -275,9 +316,25 @@ export async function plan(
       });
     });
 
-    // Accumulate logs as historical execution steps
-    if (planFromAI.log) {
-      conversationHistory.appendHistoricalLog(planFromAI.log);
+    // Update sub-goals in conversation history based on response (only when deepThink is enabled)
+    if (includeSubGoals) {
+      if (planFromAI.updateSubGoals?.length) {
+        conversationHistory.mergeSubGoals(planFromAI.updateSubGoals);
+      }
+      if (planFromAI.markFinishedIndexes?.length) {
+        for (const index of planFromAI.markFinishedIndexes) {
+          conversationHistory.markSubGoalFinished(index);
+        }
+      }
+      // Append the planning log to the currently running sub-goal
+      if (planFromAI.log) {
+        conversationHistory.appendSubGoalLog(planFromAI.log);
+      }
+    } else {
+      // In non-deepThink mode, accumulate logs as historical execution steps
+      if (planFromAI.log) {
+        conversationHistory.appendHistoricalLog(planFromAI.log);
+      }
     }
 
     // Append memory to conversation history if present

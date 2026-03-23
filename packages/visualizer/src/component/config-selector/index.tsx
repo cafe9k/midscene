@@ -1,4 +1,4 @@
-import { Checkbox, Dropdown, type MenuProps, Radio } from 'antd';
+import { Checkbox, Dropdown, type MenuProps, Radio, Tooltip } from 'antd';
 import type React from 'react';
 import SettingOutlined from '../../icons/setting.svg';
 import { useEnvConfig } from '../../store/store';
@@ -6,6 +6,7 @@ import type { DeviceType } from '../../types';
 import {
   alwaysRefreshScreenInfoTip,
   autoDismissKeyboardTip,
+  deepLocateTip,
   deepThinkTip,
   domIncludedTip,
   imeStrategyTip,
@@ -15,6 +16,7 @@ import {
 } from '../../utils/constants';
 
 interface ConfigSelectorProps {
+  showDeepLocateOption: boolean;
   showDeepThinkOption: boolean;
   enableTracking: boolean;
   showDataExtractionOptions: boolean;
@@ -23,6 +25,7 @@ interface ConfigSelectorProps {
 }
 
 export const ConfigSelector: React.FC<ConfigSelectorProps> = ({
+  showDeepLocateOption = false,
   showDeepThinkOption = false,
   enableTracking = false,
   showDataExtractionOptions = false,
@@ -35,6 +38,8 @@ export const ConfigSelector: React.FC<ConfigSelectorProps> = ({
   const setForceSameTabNavigation = useEnvConfig(
     (state) => state.setForceSameTabNavigation,
   );
+  const deepLocate = useEnvConfig((state) => state.deepLocate);
+  const setDeepLocate = useEnvConfig((state) => state.setDeepLocate);
   const deepThink = useEnvConfig((state) => state.deepThink);
   const setDeepThink = useEnvConfig((state) => state.setDeepThink);
   const screenshotIncluded = useEnvConfig((state) => state.screenshotIncluded);
@@ -70,6 +75,7 @@ export const ConfigSelector: React.FC<ConfigSelectorProps> = ({
 
   if (
     !enableTracking &&
+    !showDeepLocateOption &&
     !showDeepThinkOption &&
     !showDataExtractionOptions &&
     !hasDeviceOptions
@@ -104,17 +110,41 @@ export const ConfigSelector: React.FC<ConfigSelectorProps> = ({
       });
     }
 
-    if (showDeepThinkOption) {
+    if (showDeepLocateOption) {
       items.push({
         label: (
           <Checkbox
             onChange={(e) => {
-              setDeepThink(e.target.checked);
+              setDeepLocate(e.target.checked);
             }}
-            checked={deepThink}
+            checked={deepLocate}
           >
-            {deepThinkTip}
+            {deepLocateTip}
           </Checkbox>
+        ),
+        key: 'deep-locate-config',
+      });
+    }
+
+    if (showDeepThinkOption) {
+      items.push({
+        label: (
+          <div style={{ padding: '4px 0' }}>
+            <div style={{ marginBottom: '4px', fontSize: '14px' }}>
+              {deepThinkTip}
+            </div>
+            <Radio.Group
+              size="small"
+              value={deepThink}
+              onChange={(e) => setDeepThink(e.target.value)}
+            >
+              <Tooltip title="Controlled by MIDSCENE_MODEL_REASONING_ENABLED env variable">
+                <Radio value={'unset'}>Auto</Radio>
+              </Tooltip>
+              <Radio value={true}>On</Radio>
+              <Radio value={false}>Off</Radio>
+            </Radio.Group>
+          </div>
         ),
         key: 'deep-think-config',
       });

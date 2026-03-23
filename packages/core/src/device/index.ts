@@ -104,6 +104,9 @@ export const defineActionTap = (
     description: 'Tap the element',
     interfaceAlias: 'aiTap',
     paramSchema: actionTapParamSchema,
+    sample: {
+      locate: { prompt: 'the "Submit" button' },
+    },
     call,
   });
 };
@@ -129,6 +132,9 @@ export const defineActionRightClick = (
     description: 'Right click the element',
     interfaceAlias: 'aiRightClick',
     paramSchema: actionRightClickParamSchema,
+    sample: {
+      locate: { prompt: 'the file icon on the desktop' },
+    },
     call,
   });
 };
@@ -154,6 +160,9 @@ export const defineActionDoubleClick = (
     description: 'Double click the element',
     interfaceAlias: 'aiDoubleClick',
     paramSchema: actionDoubleClickParamSchema,
+    sample: {
+      locate: { prompt: 'the folder icon' },
+    },
     call,
   });
 };
@@ -174,6 +183,9 @@ export const defineActionHover = (
     description: 'Move the mouse to the element',
     interfaceAlias: 'aiHover',
     paramSchema: actionHoverParamSchema,
+    sample: {
+      locate: { prompt: 'the navigation menu item "Products"' },
+    },
     call,
   });
 };
@@ -212,6 +224,10 @@ export const defineActionInput = (
     description: 'Input the value into the element',
     interfaceAlias: 'aiInput',
     paramSchema: actionInputParamSchema,
+    sample: {
+      value: 'test@example.com',
+      locate: { prompt: 'the email input field' },
+    },
     call: (param) => {
       // backward compat: convert deprecated 'append' to 'typeOnly'
       if ((param.mode as string) === 'append') {
@@ -250,6 +266,9 @@ export const defineActionKeyboardPress = (
       'Press a key or key combination, like "Enter", "Tab", "Escape", or "Control+A", "Shift+Enter". Do not use this to type text.',
     interfaceAlias: 'aiKeyboardPress',
     paramSchema: actionKeyboardPressParamSchema,
+    sample: {
+      keyName: 'Enter',
+    },
     call,
   });
 };
@@ -295,6 +314,11 @@ export const defineActionScroll = (
       'Scroll the page or a scrollable element to browse content. This is the preferred way to scroll on all platforms, including mobile. Supports scrollToBottom/scrollToTop for boundary navigation. Default: direction `down`, scrollType `singleAction`, distance `null`.',
     interfaceAlias: 'aiScroll',
     paramSchema: actionScrollParamSchema,
+    sample: {
+      direction: 'down',
+      scrollType: 'singleAction',
+      locate: { prompt: 'the center of the product list area' },
+    },
     call,
   });
 };
@@ -321,6 +345,10 @@ export const defineActionDragAndDrop = (
       'Pick up a specific UI element and move it to a new position (e.g., reorder a card, move a file into a folder, sort list items). The element itself moves with your finger/mouse.',
     interfaceAlias: 'aiDragAndDrop',
     paramSchema: actionDragAndDropParamSchema,
+    sample: {
+      from: { prompt: 'the "report.pdf" file icon' },
+      to: { prompt: 'the upload drop zone' },
+    },
     call,
   });
 };
@@ -347,6 +375,9 @@ export const defineActionLongPress = (
     name: 'LongPress',
     description: 'Long press the element',
     paramSchema: ActionLongPressParamSchema,
+    sample: {
+      locate: { prompt: 'the message bubble' },
+    },
     call,
   });
 };
@@ -461,6 +492,10 @@ export const defineActionSwipe = (
     description:
       'Perform a touch gesture for interactions beyond regular scrolling (e.g., flip pages in a carousel, dismiss a notification, swipe-to-delete a list item). For regular content scrolling, use Scroll instead. Use "distance" + "direction" for relative movement, or "end" for precise endpoint.',
     paramSchema: ActionSwipeParamSchema,
+    sample: {
+      start: { prompt: 'center of the notification' },
+      end: { prompt: 'upper edge of the screen' },
+    },
     call,
   });
 };
@@ -486,6 +521,9 @@ export const defineActionClearInput = (
     description: inputLocateDescription,
     interfaceAlias: 'aiClearInput',
     paramSchema: actionClearInputParamSchema,
+    sample: {
+      locate: { prompt: 'the search input field' },
+    },
     call,
   });
 };
@@ -520,9 +558,97 @@ export const defineActionCursorMove = (
     description:
       'Move the text cursor (caret) left or right within an input field or text area. Use this to reposition the cursor without selecting text.',
     paramSchema: actionCursorMoveParamSchema,
+    sample: {
+      direction: 'left',
+      times: 3,
+    },
     call,
   });
 };
+
+// Pinch
+export const ActionPinchParamSchema = z.object({
+  locate: getMidsceneLocationSchema()
+    .optional()
+    .describe(
+      'The element to pinch on. If not specified, the center of the screen will be used',
+    ),
+  direction: z
+    .enum(['in', 'out'])
+    .describe(
+      'Pinch direction. "in" = pinch fingers together (zoom out / shrink), "out" = spread fingers apart (zoom in / enlarge).',
+    ),
+  distance: z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      'How far each finger moves in pixels. Defaults to a quarter of the shorter screen dimension.',
+    ),
+  duration: z
+    .number()
+    .default(500)
+    .optional()
+    .describe('Duration of the pinch gesture in milliseconds'),
+});
+
+export type ActionPinchParam = {
+  locate?: LocateResultElement;
+  direction: 'in' | 'out';
+  distance?: number;
+  duration?: number;
+};
+
+export const defineActionPinch = (
+  call: (param: ActionPinchParam) => Promise<void>,
+): DeviceAction<ActionPinchParam> => {
+  return defineAction<typeof ActionPinchParamSchema, ActionPinchParam>({
+    name: 'Pinch',
+    description:
+      'Perform a two-finger pinch gesture. Use direction "in" to pinch fingers together (zoom out), or "out" to spread fingers apart (zoom in). Optionally specify distance for how far each finger moves.',
+    interfaceAlias: 'aiPinch',
+    paramSchema: ActionPinchParamSchema,
+    sample: {
+      locate: { prompt: 'the map area' },
+      direction: 'out',
+      distance: 200,
+    },
+    call,
+  });
+};
+
+export function normalizePinchParam(
+  param: ActionPinchParam,
+  screenSize: { width: number; height: number },
+): {
+  centerX: number;
+  centerY: number;
+  startDistance: number;
+  endDistance: number;
+  duration: number;
+} {
+  const { width, height } = screenSize;
+  const element = param.locate;
+  const centerX = element
+    ? Math.round(element.center[0])
+    : Math.round(width / 2);
+  const centerY = element
+    ? Math.round(element.center[1])
+    : Math.round(height / 2);
+  const duration = param.duration ?? 500;
+
+  const baseDistance = Math.round(Math.min(width, height) / 4);
+  const fingerDistance = param.distance ?? baseDistance;
+
+  const startDistance = baseDistance;
+  const endDistance =
+    param.direction === 'out'
+      ? baseDistance + fingerDistance
+      : Math.max(10, baseDistance - fingerDistance);
+
+  return { centerX, centerY, startDistance, endDistance, duration };
+}
+
 // Sleep
 export const ActionSleepParamSchema = z.object({
   timeMs: z
@@ -542,6 +668,9 @@ export const defineActionSleep = (): DeviceAction<ActionSleepParam> => {
     description:
       'Wait for a specified duration before continuing. Defaults to 1 second (1000ms) if not specified.',
     paramSchema: ActionSleepParamSchema,
+    sample: {
+      timeMs: 2000,
+    },
     call: async (param) => {
       const duration = param?.timeMs ?? 1000;
       getDebug('device:common-action')(`Sleeping for ${duration}ms`);
@@ -556,4 +685,6 @@ export type {
   AndroidDeviceInputOpt,
   IOSDeviceOpt,
   IOSDeviceInputOpt,
+  HarmonyDeviceOpt,
+  HarmonyDeviceInputOpt,
 } from './device-options';

@@ -7,7 +7,7 @@ import { pluginSitemap } from '@rspress/plugin-sitemap';
 export default defineConfig({
   root: path.join(__dirname, 'docs'),
   title: 'Midscene - Vision-Driven UI Automation',
-  description: 'Driving all platforms UI automation with vision-based model',
+  description: 'AI-powered, vision-driven UI automation for every platform.',
   icon: '/midscene-icon.png',
   logo: {
     light: '/midscene_with_text_light.png',
@@ -138,6 +138,21 @@ export default defineConfig({
         {
           text: 'API reference (iOS)',
           link: '/ios-api-reference',
+        },
+        {
+          sectionHeaderText: 'HarmonyOS',
+        },
+        {
+          text: 'Introduction',
+          link: '/harmony-introduction',
+        },
+        {
+          text: 'Getting started',
+          link: '/harmony-getting-started',
+        },
+        {
+          text: 'API reference (HarmonyOS)',
+          link: '/harmony-api-reference',
         },
         {
           sectionHeaderText: 'PC Desktop',
@@ -299,6 +314,21 @@ export default defineConfig({
         {
           text: 'API 参考（iOS）',
           link: '/zh/ios-api-reference',
+        },
+        {
+          sectionHeaderText: 'HarmonyOS',
+        },
+        {
+          text: '介绍',
+          link: '/zh/harmony-introduction',
+        },
+        {
+          text: '开始使用',
+          link: '/zh/harmony-getting-started',
+        },
+        {
+          text: 'API 参考（HarmonyOS）',
+          link: '/zh/harmony-api-reference',
         },
         {
           sectionHeaderText: 'PC 桌面',

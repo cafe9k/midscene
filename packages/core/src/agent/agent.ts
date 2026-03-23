@@ -142,6 +142,7 @@ export type AiActOptions = {
   fileChooserAccept?: string | string[];
   deepThink?: DeepThinkOption;
   deepLocate?: boolean;
+  abortSignal?: AbortSignal;
 };
 
 export class Agent<
@@ -362,6 +363,18 @@ export class Agent<
     return this.fullActionSpace;
   }
 
+  private static readonly CONTEXT_RETRY_MAX = 3;
+  private static readonly CONTEXT_RETRY_DELAY_MS = 1500;
+
+  /**
+   * Override in subclasses to indicate which errors are transient and should
+   * trigger an automatic retry when building the UI context.
+   * Returns `false` by default (no retry).
+   */
+  protected isRetryableContextError(_error: unknown): boolean {
+    return false;
+  }
+
   async getUIContext(action?: ServiceAction): Promise<UIContext> {
     // Check VL model configuration when UI context is first needed
     this.ensureVLModelWarning();
@@ -372,13 +385,29 @@ export class Agent<
       return this.frozenUIContext;
     }
 
-    // Get original context
-    const context = await commonContextParser(this.interface, {
-      uploadServerUrl: this.modelConfigManager.getUploadTestServerUrl(),
-      screenshotShrinkFactor: this.opts.screenshotShrinkFactor,
-    });
+    const { modelFamily } = this.modelConfigManager.getModelConfig('default');
 
-    return context;
+    const maxRetries = Agent.CONTEXT_RETRY_MAX;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await commonContextParser(this.interface, {
+          uploadServerUrl: this.modelConfigManager.getUploadTestServerUrl(),
+          screenshotShrinkFactor: this.opts.screenshotShrinkFactor,
+          modelFamily,
+        });
+      } catch (error) {
+        if (attempt < maxRetries && this.isRetryableContextError(error)) {
+          debug(
+            `retryable context error (attempt ${attempt + 1}/${maxRetries}), retrying in ${Agent.CONTEXT_RETRY_DELAY_MS}ms: ${error}`,
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, Agent.CONTEXT_RETRY_DELAY_MS),
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   async _snapshotContext(): Promise<UIContext> {
@@ -409,6 +438,7 @@ export class Agent<
       groupDescription: this.opts.groupDescription,
       executions: [],
       modelBriefs: [],
+      deviceType: this.interface.interfaceType,
     });
     this.executionDumpIndexByRunner = new WeakMap<TaskRunner, number>();
 
@@ -778,6 +808,25 @@ export class Agent<
     });
   }
 
+  async aiPinch(
+    locatePrompt: TUserPrompt | undefined,
+    opt: LocateOption & {
+      direction: 'in' | 'out';
+      distance?: number;
+      duration?: number;
+    },
+  ) {
+    const detailedLocateParam = buildDetailedLocateParam(
+      locatePrompt || '',
+      opt,
+    );
+
+    return this.callActionInActionSpace('Pinch', {
+      ...opt,
+      locate: detailedLocateParam,
+    });
+  }
+
   async aiAct(
     taskPrompt: string,
     opt?: AiActOptions,
@@ -786,6 +835,13 @@ export class Agent<
       ? this.normalizeFileInput(opt.fileChooserAccept)
       : undefined;
 
+    const abortSignal = opt?.abortSignal;
+    if (abortSignal?.aborted) {
+      throw new Error(
+        `aiAct aborted: ${abortSignal.reason || 'signal already aborted'}`,
+      );
+    }
+
     const runAiAct = async () => {
       const modelConfigForPlanning =
         this.modelConfigManager.getModelConfig('planning');
@@ -793,15 +849,23 @@ export class Agent<
         this.modelConfigManager.getModelConfig('default');
       const deepThink = opt?.deepThink === 'unset' ? undefined : opt?.deepThink;
 
-      const includeBboxInPlanning =
-        !deepThink &&
+      const deepLocate = opt?.deepLocate;
+
+      const noIndividualLocateModel =
         modelConfigForPlanning.modelName ===
           defaultIntentModelConfig.modelName &&
         modelConfigForPlanning.openaiBaseURL ===
           defaultIntentModelConfig.openaiBaseURL;
-      debug('setting includeBboxInPlanning to', includeBboxInPlanning);
 
-      const deepLocate = opt?.deepLocate;
+      const includeBboxInPlanning =
+        !deepThink && noIndividualLocateModel && !deepLocate;
+
+      debug('setting includeBboxInPlanning to', includeBboxInPlanning, {
+        deepThink,
+        noIndividualLocateModel,
+        deepLocate,
+      });
+
       if (deepLocate && includeBboxInPlanning) {
         console.warn(
           'deepLocate option is ignored when includeBboxInPlanning is true (same model for planning and default intent without deepThink). Locate is already done during planning.',
@@ -820,7 +884,7 @@ export class Agent<
           ? undefined
           : this.taskCache?.matchPlanCache(taskPrompt);
       if (
-        matchedCache &&
+        matchedCache?.cacheUsable &&
         this.taskCache?.isCacheResultUsed &&
         matchedCache.cacheContent?.yamlWorkflow?.trim()
       ) {
@@ -836,7 +900,7 @@ export class Agent<
         return;
       }
 
-      // If cache matched but yamlWorkflow is empty, fall through to normal execution
+      // If cache matched but is not executable, fall through to normal execution
       const imagesIncludeCount: number = deepThink ? 2 : 1;
       const { output: actionOutput } = await this.taskExecutor.action(
         taskPrompt,
@@ -850,10 +914,15 @@ export class Agent<
         deepThink,
         fileChooserAccept,
         includeBboxInPlanning ? undefined : deepLocate,
+        abortSignal,
       );
 
       // update cache
-      if (this.taskCache && actionOutput?.yamlFlow && cacheable !== false) {
+      if (
+        this.taskCache &&
+        actionOutput?.yamlFlow?.length &&
+        cacheable !== false
+      ) {
         const yamlContent: MidsceneYamlScript = {
           tasks: [
             {
@@ -963,7 +1032,7 @@ export class Agent<
     opt?: {
       verifyPrompt?: boolean;
       retryLimit?: number;
-      deepThink?: boolean;
+      deepLocate?: boolean;
     } & LocatorValidatorOption,
   ): Promise<AgentDescribeElementAtPointResult> {
     const { verifyPrompt = true, retryLimit = 3 } = opt || {};
@@ -971,12 +1040,12 @@ export class Agent<
     let success = false;
     let retryCount = 0;
     let resultPrompt = '';
-    let deepThink = opt?.deepThink || false;
+    let deepLocate = opt?.deepLocate || false;
     let verifyResult: LocateValidatorResult | undefined;
 
     while (!success && retryCount < retryLimit) {
       if (retryCount >= 2) {
-        deepThink = true;
+        deepLocate = true;
       }
       debug(
         'aiDescribe',
@@ -985,23 +1054,23 @@ export class Agent<
         verifyPrompt,
         'retryCount',
         retryCount,
-        'deepThink',
-        deepThink,
+        'deepLocate',
+        deepLocate,
       );
       // use same intent as aiLocate
       const modelConfig = this.modelConfigManager.getModelConfig('insight');
 
       const text = await this.service.describe(center, modelConfig, {
-        deepThink,
+        deepLocate,
       });
       debug('aiDescribe text', text);
       assert(text.description, `failed to describe element at [${center}]`);
       resultPrompt = text.description;
 
-      // Don't pass deepThink to verification locate — the description was generated
-      // from a cropped view (deepThink describe), but verification should use regular
+      // Don't pass deepLocate to verification locate — the description was generated
+      // from a cropped view (deepLocate describe), but verification should use regular
       // locate on the full screenshot to confirm the description works universally.
-      // Passing deepThink here would trigger AiLocateSection with an element-level
+      // Passing deepLocate here would trigger AiLocateSection with an element-level
       // description as a section prompt, which is semantically incorrect.
       verifyResult = await this.verifyLocator(
         resultPrompt,
@@ -1018,7 +1087,7 @@ export class Agent<
 
     return {
       prompt: resultPrompt,
-      deepThink,
+      deepLocate,
       verifyResult,
     };
   }

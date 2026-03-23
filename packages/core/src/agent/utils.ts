@@ -9,6 +9,7 @@ import type {
   UIContext,
 } from '@/types';
 import { uploadTestInfoToServer } from '@/utils';
+import type { TModelFamily } from '@midscene/shared/env';
 import {
   MIDSCENE_REPORT_QUIET,
   MIDSCENE_REPORT_TAG_NAME,
@@ -25,7 +26,11 @@ import { debug as cacheDebug } from './task-cache';
 
 export async function commonContextParser(
   interfaceInstance: AbstractInterface,
-  _opt: { uploadServerUrl?: string; screenshotShrinkFactor?: number },
+  _opt: {
+    uploadServerUrl?: string;
+    screenshotShrinkFactor?: number;
+    modelFamily?: TModelFamily;
+  },
 ): Promise<UIContext> {
   const debug = getDebug('commonContextParser');
 
@@ -87,7 +92,22 @@ export async function commonContextParser(
   }
   debug('screenshot dimensions', imgWidth, 'x', imgHeight);
 
-  // Validate user-specified shrink factor
+  // Detect orientation mismatch between logical size and screenshot.
+  // Some devices (e.g. OPPO) report wrong orientation via ADB, causing
+  // size() to return portrait dimensions even when the device is landscape.
+  // We detect this by comparing aspect ratios and swap if they disagree.
+  const logicalIsPortrait = logicalWidth < logicalHeight;
+  const screenshotIsPortrait = imgWidth < imgHeight;
+  let finalLogicalWidth = logicalWidth;
+  let finalLogicalHeight = logicalHeight;
+  if (logicalIsPortrait !== screenshotIsPortrait) {
+    debug(
+      `Orientation mismatch detected: logical size ${logicalWidth}x${logicalHeight} (${logicalIsPortrait ? 'portrait' : 'landscape'}) vs screenshot ${imgWidth}x${imgHeight} (${screenshotIsPortrait ? 'portrait' : 'landscape'}). Swapping logical dimensions.`,
+    );
+    finalLogicalWidth = logicalHeight;
+    finalLogicalHeight = logicalWidth;
+  }
+
   const userShrinkFactor = _opt.screenshotShrinkFactor ?? 1;
 
   if (!Number.isFinite(userShrinkFactor) || userShrinkFactor < 1) {
@@ -96,7 +116,7 @@ export async function commonContextParser(
     );
   }
 
-  const dpr = imgWidth / logicalWidth;
+  const dpr = imgWidth / finalLogicalWidth;
 
   debug('calculated dpr:', dpr);
 

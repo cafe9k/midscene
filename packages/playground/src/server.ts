@@ -49,6 +49,12 @@ class PlaygroundServer {
   taskExecutionDumps: Record<string, ExecutionDump | null>; // Store execution dumps directly
   id: string; // Unique identifier for this server instance
 
+  /**
+   * Port for scrcpy server (used by Android playground for screen mirroring)
+   * When set, this port is injected into the HTML page as window.SCRCPY_PORT
+   */
+  scrcpyPort?: number;
+
   private _initialized = false;
 
   // Native MJPEG stream probe: null = not tested, true/false = result
@@ -59,6 +65,12 @@ class PlaygroundServer {
 
   // Track current running task
   private currentTaskId: string | null = null;
+
+  // Flag to pause MJPEG polling during agent recreation or task execution
+  private _agentReady = true;
+
+  // Flag to track if AI config has changed and agent needs recreation
+  private _configDirty = false;
 
   constructor(
     agent: PageAgent | (() => PageAgent) | (() => Promise<PageAgent>),
@@ -177,12 +189,7 @@ class PlaygroundServer {
    * Recreate agent instance (for cancellation)
    */
   private async recreateAgent(): Promise<void> {
-    if (!this.agentFactory) {
-      throw new Error(
-        'Cannot recreate agent: factory function not provided. Attempting to destroy existing agent only.',
-      );
-    }
-
+    this._agentReady = false;
     console.log('Recreating agent to cancel current task...');
 
     // Destroy old agent instance
@@ -194,13 +201,22 @@ class PlaygroundServer {
       console.warn('Failed to destroy old agent:', error);
     }
 
-    // Create new agent instance
-    try {
-      this.agent = await this.agentFactory();
-      console.log('Agent recreated successfully');
-    } catch (error) {
-      console.error('Failed to recreate agent:', error);
-      throw error;
+    // Create new agent instance if factory is available
+    if (this.agentFactory) {
+      try {
+        this.agent = await this.agentFactory();
+        this._agentReady = true;
+        console.log('Agent recreated successfully');
+      } catch (error) {
+        this._agentReady = true;
+        console.error('Failed to recreate agent:', error);
+        throw error;
+      }
+    } else {
+      this._agentReady = true;
+      console.warn(
+        'Agent destroyed but cannot recreate: no factory function provided. Next /execute call will fail.',
+      );
     }
   }
 
@@ -341,6 +357,7 @@ class PlaygroundServer {
         prompt,
         params,
         requestId,
+        deepLocate,
         deepThink,
         screenshotIncluded,
         domIncluded,
@@ -353,9 +370,11 @@ class PlaygroundServer {
         });
       }
 
-      // Always recreate agent before execution to ensure latest config is applied
-      if (this.agentFactory) {
-        console.log('Destroying old agent before execution...');
+      // Recreate agent only when AI config has changed (via /config API)
+      if (this.agentFactory && this._configDirty) {
+        this._configDirty = false;
+        this._agentReady = false;
+        console.log('AI config changed, recreating agent...');
         try {
           if (this.agent && typeof this.agent.destroy === 'function') {
             await this.agent.destroy();
@@ -364,12 +383,13 @@ class PlaygroundServer {
           console.warn('Failed to destroy old agent:', error);
         }
 
-        console.log('Creating new agent with latest config...');
         try {
           this.agent = await this.agentFactory();
-          console.log('Agent created successfully');
+          this._agentReady = true;
+          console.log('Agent recreated with new config');
         } catch (error) {
-          console.error('Failed to create agent:', error);
+          this._agentReady = true;
+          console.error('Failed to recreate agent:', error);
           return res.status(500).json({
             error: `Failed to create agent: ${error instanceof Error ? error.message : 'Unknown error'}`,
           });
@@ -377,13 +397,12 @@ class PlaygroundServer {
       }
 
       // Update device options if provided
-      if (
-        deviceOptions &&
-        this.agent.interface &&
-        'options' in this.agent.interface
-      ) {
-        this.agent.interface.options = {
-          ...(this.agent.interface.options || {}),
+      if (deviceOptions && this.agent.interface) {
+        const iface = this.agent.interface as unknown as {
+          options?: Record<string, unknown>;
+        };
+        iface.options = {
+          ...(iface.options || {}),
           ...deviceOptions,
         };
       }
@@ -445,6 +464,7 @@ class PlaygroundServer {
           actionSpace,
           value,
           {
+            deepLocate,
             deepThink,
             screenshotIncluded,
             domIncluded,
@@ -478,6 +498,7 @@ class PlaygroundServer {
         console.error(
           `write out dump failed: requestId: ${requestId}, ${errorMessage}`,
         );
+      } finally {
       }
 
       res.send(response);
@@ -547,14 +568,11 @@ class PlaygroundServer {
             console.warn('Failed to get execution data before cancel:', error);
           }
 
-          // Destroy agent to cancel the current task
-          // No need to recreate here — /execute always creates a fresh agent before each run
+          // Destroy and recreate agent to cancel the current task
           try {
-            if (this.agent && typeof this.agent.destroy === 'function') {
-              await this.agent.destroy();
-            }
+            await this.recreateAgent();
           } catch (error) {
-            console.warn('Failed to destroy agent during cancel:', error);
+            console.warn('Failed to recreate agent during cancel:', error);
           }
 
           // Clean up
@@ -666,6 +684,7 @@ class PlaygroundServer {
 
       try {
         overrideAIConfig(aiConfig);
+        this._configDirty = true;
       } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
@@ -742,8 +761,9 @@ class PlaygroundServer {
     const maxErrorBackoffMs = 3000;
     const errorLogThreshold = 3;
 
+    const parsedFps = Number(req.query.fps);
     const fps = Math.min(
-      Math.max(Number(req.query.fps) ?? defaultMjpegFps, 1),
+      Math.max(Number.isNaN(parsedFps) ? defaultMjpegFps : parsedFps, 1),
       maxMjpegFps,
     );
     const interval = Math.round(1000 / fps);
@@ -764,6 +784,12 @@ class PlaygroundServer {
     });
 
     while (!stopped) {
+      // Skip frame while agent is being recreated
+      if (!this._agentReady) {
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
+
       const frameStart = Date.now();
       try {
         const base64 = await this.agent.interface.screenshotBase64();
@@ -831,8 +857,7 @@ class PlaygroundServer {
       const htmlPath = join(this.staticPath, 'index.html');
       let html = readFileSync(htmlPath, 'utf8');
 
-      // Get scrcpy server port from global
-      const scrcpyPort = (global as any).scrcpyServerPort || this.port! + 1;
+      const scrcpyPort = this.scrcpyPort ?? this.port! + 1;
 
       // Inject scrcpy port configuration script into HTML head
       const configScript = `

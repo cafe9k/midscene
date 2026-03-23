@@ -1,6 +1,7 @@
 // config keys
 export const MIDSCENE_MODEL_INIT_CONFIG_JSON =
   'MIDSCENE_MODEL_INIT_CONFIG_JSON';
+export const MIDSCENE_MODEL_EXTRA_BODY_JSON = 'MIDSCENE_MODEL_EXTRA_BODY_JSON';
 export const MIDSCENE_MODEL_NAME = 'MIDSCENE_MODEL_NAME';
 export const MIDSCENE_DEBUG_MODEL_PROFILE = 'MIDSCENE_DEBUG_MODEL_PROFILE';
 export const MIDSCENE_DEBUG_MODEL_RESPONSE = 'MIDSCENE_DEBUG_MODEL_RESPONSE';
@@ -12,7 +13,6 @@ export const MIDSCENE_MCP_USE_PUPPETEER_MODE =
 export const MIDSCENE_MCP_CHROME_PATH = 'MIDSCENE_MCP_CHROME_PATH';
 export const MIDSCENE_MCP_ANDROID_MODE = 'MIDSCENE_MCP_ANDROID_MODE';
 export const DOCKER_CONTAINER = 'DOCKER_CONTAINER';
-export const MIDSCENE_FORCE_DEEP_THINK = 'MIDSCENE_FORCE_DEEP_THINK';
 
 // Observability
 export const MIDSCENE_LANGSMITH_DEBUG = 'MIDSCENE_LANGSMITH_DEBUG';
@@ -102,6 +102,8 @@ export const MIDSCENE_INSIGHT_MODEL_BASE_URL =
 export const MIDSCENE_INSIGHT_MODEL_API_KEY = 'MIDSCENE_INSIGHT_MODEL_API_KEY';
 export const MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON =
   'MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON';
+export const MIDSCENE_INSIGHT_MODEL_EXTRA_BODY_JSON =
+  'MIDSCENE_INSIGHT_MODEL_EXTRA_BODY_JSON';
 export const MIDSCENE_INSIGHT_MODEL_TIMEOUT = 'MIDSCENE_INSIGHT_MODEL_TIMEOUT';
 export const MIDSCENE_INSIGHT_MODEL_TEMPERATURE =
   'MIDSCENE_INSIGHT_MODEL_TEMPERATURE';
@@ -129,6 +131,8 @@ export const MIDSCENE_PLANNING_MODEL_API_KEY =
   'MIDSCENE_PLANNING_MODEL_API_KEY';
 export const MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON =
   'MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON';
+export const MIDSCENE_PLANNING_MODEL_EXTRA_BODY_JSON =
+  'MIDSCENE_PLANNING_MODEL_EXTRA_BODY_JSON';
 export const MIDSCENE_PLANNING_MODEL_TIMEOUT =
   'MIDSCENE_PLANNING_MODEL_TIMEOUT';
 export const MIDSCENE_PLANNING_MODEL_TEMPERATURE =
@@ -164,7 +168,6 @@ export const BASIC_ENV_KEYS = [
 
 export const BOOLEAN_ENV_KEYS = [
   MIDSCENE_CACHE,
-  MIDSCENE_FORCE_DEEP_THINK,
   MIDSCENE_MCP_USE_PUPPETEER_MODE,
   MIDSCENE_MCP_ANDROID_MODE,
   MIDSCENE_LANGSMITH_DEBUG,
@@ -214,6 +217,7 @@ export const MODEL_ENV_KEYS = [
   // model default
   MIDSCENE_MODEL_NAME,
   MIDSCENE_MODEL_INIT_CONFIG_JSON,
+  MIDSCENE_MODEL_EXTRA_BODY_JSON,
   MIDSCENE_MODEL_API_KEY,
   MIDSCENE_MODEL_BASE_URL,
   MIDSCENE_MODEL_SOCKS_PROXY,
@@ -244,6 +248,7 @@ export const MODEL_ENV_KEYS = [
   MIDSCENE_INSIGHT_MODEL_BASE_URL,
   MIDSCENE_INSIGHT_MODEL_API_KEY,
   MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON,
+  MIDSCENE_INSIGHT_MODEL_EXTRA_BODY_JSON,
   MIDSCENE_INSIGHT_MODEL_TIMEOUT,
   MIDSCENE_INSIGHT_MODEL_TEMPERATURE,
   MIDSCENE_INSIGHT_MODEL_RETRY_COUNT,
@@ -259,6 +264,7 @@ export const MODEL_ENV_KEYS = [
   MIDSCENE_PLANNING_MODEL_BASE_URL,
   MIDSCENE_PLANNING_MODEL_API_KEY,
   MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON,
+  MIDSCENE_PLANNING_MODEL_EXTRA_BODY_JSON,
   MIDSCENE_PLANNING_MODEL_TIMEOUT,
   MIDSCENE_PLANNING_MODEL_TEMPERATURE,
   MIDSCENE_PLANNING_MODEL_RETRY_COUNT,
@@ -280,7 +286,10 @@ export const ALL_ENV_KEYS = [
 export type TEnvKeys = (typeof ALL_ENV_KEYS)[number];
 export type TGlobalConfig = Record<TEnvKeys, string | undefined>;
 
-export type TVlModeValues =
+/**
+ * valid Model family types
+ */
+export type TModelFamily =
   | 'qwen2.5-vl'
   | 'qwen3-vl'
   | 'qwen3.5'
@@ -292,9 +301,10 @@ export type TVlModeValues =
   | 'vlm-ui-tars-doubao-1.5'
   | 'glm-v'
   | 'auto-glm'
-  | 'auto-glm-multilingual';
+  | 'auto-glm-multilingual'
+  | 'gpt-5';
 
-export const VL_MODE_RAW_VALID_VALUES: TVlModeValues[] = [
+export const MODEL_FAMILY_VALUES: TModelFamily[] = [
   'doubao-vision',
   'doubao-seed',
   'gemini',
@@ -307,21 +317,6 @@ export const VL_MODE_RAW_VALID_VALUES: TVlModeValues[] = [
   'glm-v',
   'auto-glm',
   'auto-glm-multilingual',
-];
-
-/**
- * Model family values - unified model configuration approach
- * Replaces the old MIDSCENE_USE_* environment variables
- *
- * Note: These values directly correspond to VL_MODE_RAW_VALID_VALUES
- * - 'qwen2.5-vl' is Qwen 2.5
- * - 'qwen3-vl' is Qwen 3
- * - 'qwen3.5' is Qwen 3.5 (behaves the same as qwen3-vl)
- */
-export type TModelFamily = TVlModeValues | 'gpt-5';
-
-export const MODEL_FAMILY_VALUES: TModelFamily[] = [
-  ...VL_MODE_RAW_VALID_VALUES,
   'gpt-5',
 ];
 
@@ -335,6 +330,7 @@ export interface IModelConfigForInsight {
   [MIDSCENE_INSIGHT_MODEL_BASE_URL]?: string;
   [MIDSCENE_INSIGHT_MODEL_API_KEY]?: string;
   [MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON]?: string;
+  [MIDSCENE_INSIGHT_MODEL_EXTRA_BODY_JSON]?: string;
   // timeout
   [MIDSCENE_INSIGHT_MODEL_TIMEOUT]?: string;
   // temperature
@@ -353,6 +349,7 @@ export interface IModelConfigForPlanning {
   [MIDSCENE_PLANNING_MODEL_BASE_URL]?: string;
   [MIDSCENE_PLANNING_MODEL_API_KEY]?: string;
   [MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON]?: string;
+  [MIDSCENE_PLANNING_MODEL_EXTRA_BODY_JSON]?: string;
   // timeout
   [MIDSCENE_PLANNING_MODEL_TIMEOUT]?: string;
   // temperature
@@ -367,17 +364,7 @@ export interface IModelConfigForPlanning {
  * IMPORTANT: Planning MUST use a vision language model (VL mode).
  * DOM-based planning is not supported.
  *
- * Required: MIDSCENE_MODEL_FAMILY must be set to one of:
- *   - 'qwen2.5-vl'
- *   - 'qwen3-vl'
- *   - 'qwen3.5'
- *   - 'gemini'
- *   - 'doubao-vision'
- *   - 'doubao-seed'
- *   - 'vlm-ui-tars'
- *   - 'vlm-ui-tars-doubao'
- *   - 'vlm-ui-tars-doubao-1.5'
- *   - 'glm-v'
+ * Required: MIDSCENE_MODEL_FAMILY must be set to one of 「TModelFamily」
  */
 export interface IModelConfigForDefault {
   // model name
@@ -389,6 +376,7 @@ export interface IModelConfigForDefault {
   [MIDSCENE_MODEL_BASE_URL]?: string;
   [MIDSCENE_MODEL_API_KEY]?: string;
   [MIDSCENE_MODEL_INIT_CONFIG_JSON]?: string;
+  [MIDSCENE_MODEL_EXTRA_BODY_JSON]?: string;
   // extra
   [MIDSCENE_MODEL_FAMILY]?: TModelFamily;
   // temperature
@@ -480,6 +468,13 @@ export interface IModelConfig {
   openaiBaseURL?: string;
   openaiApiKey?: string;
   openaiExtraConfig?: Record<string, unknown>;
+  /**
+   * Extra body parameters merged into each chat completion request body.
+   * Unlike openaiExtraConfig (which configures the OpenAI client instance),
+   * this is spread directly into the completion.create() call body.
+   * Example: { "chat_template_kwargs": { "enable_thinking": true } }
+   */
+  extraBody?: Record<string, unknown>;
   /**
    * Timeout for API calls in milliseconds.
    * If not set, uses OpenAI SDK default (10 minutes).
