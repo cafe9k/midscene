@@ -20,8 +20,7 @@ WDA_PROJECT="$SCRIPT_DIR/node_modules/appium-webdriveragent/WebDriverAgent.xcode
 # 如果未找到，安装依赖
 if [ ! -e "$WDA_PROJECT" ]; then
     echo "❌ WebDriverAgent 未安装，正在安装..."
-    mkdir -p "$SCRIPT_DIR/node_modules"
-    cd "$SCRIPT_DIR" && pnpm add -w appium-webdriveragent --no-save
+    cd "$SCRIPT_DIR" && pnpm add appium-webdriveragent
 fi
 
 [ -e "$WDA_PROJECT" ] && echo "✅ WebDriverAgent 已安装" || { echo "❌ WebDriverAgent 项目文件不存在"; exit 1; }

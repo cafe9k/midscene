@@ -17,7 +17,8 @@
     "build:watch": "rslib build --watch --no-clean"
   },
   "dependencies": {
-    "@midscene/ios": "workspace:*"
+    "@midscene/ios": "workspace:*",
+    "appium-webdriveragent": "11.4.1"
   },
   "devDependencies": {
     "@rslib/core": "^0.18.3",
